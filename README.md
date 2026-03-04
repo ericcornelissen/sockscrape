@@ -5,23 +5,33 @@ Scrape package source code from [Socket](https://socket.dev/).
 ## Installation
 
 ```shell
-git clone https://github.com/ericcornelissen/sockscrape
-cd sockscrape
-go run . -install
+# OPTIONAL
+go install github.com/ericcornelissen/sockscrape@latest
+```
+
+```shell
+go run github.com/ericcornelissen/sockscrape@latest -install
 ```
 
 ## Usage
 
 ```shell
-go run . -ecosystem <cargo|npm|etc...> -module <name>
+mkdir out
+go run github.com/ericcornelissen/sockscrape@latest \
+  -ecosystem <cargo|npm|etc...> -module <name>
 ```
+
 
 ### Examples
 
 ```shell
-go run . -ecosystem cargo -module simple-regex
+mkdir out
+go run github.com/ericcornelissen/sockscrape@latest \
+  -ecosystem cargo -module simple-regex
 ```
 
 ```shell
-go run . -ecosystem cargo -module simple-regex -version 1.0.1
+mkdir out
+go run github.com/ericcornelissen/sockscrape@latest \
+  -ecosystem cargo -module simple-regex -version 1.0.1
 ```

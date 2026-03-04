@@ -19,11 +19,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/playwright-community/playwright-go"
@@ -101,7 +101,7 @@ func main() {
 		module:    *flagModule,
 	}
 
-	page, err := start()
+	browser, err := start()
 	if err != nil {
 		fmt.Printf("could not set up: %v\n", err)
 		os.Exit(1)
@@ -111,18 +111,24 @@ func main() {
 	if *flagVersion != "" {
 		versions = []version{version(*flagVersion)}
 	} else {
-		versions, err = getVersions(page, target)
+		versions, err = getVersions(browser, target)
 		if err != nil {
 			fmt.Printf("could not get versions: %v\n", err)
 			os.Exit(1)
 		}
 	}
 
+	var wg sync.WaitGroup
 	for _, version := range versions {
-		if err := downloadVersion(page, &target, version); err != nil {
-			fmt.Printf("[WARN] Could not download %q: %v", version, err)
-		}
+		wg.Go(func() {
+			if err := downloadVersion(browser, &target, version); err != nil {
+				fmt.Printf("[WARN] Could not download %q: %v", version, err)
+			}
+		})
 	}
+	wg.Wait()
+
+	fmt.Printf("[INFO] Finished downloading %s\n", target.module)
 }
 
 func flags() error {
@@ -141,13 +147,13 @@ func flags() error {
 	}
 
 	if *flagModule == "" {
-		return errors.New("must provide a -package <NAME>")
+		return errors.New("must provide a -module <NAME>")
 	}
 
 	return nil
 }
 
-func start() (playwright.Page, error) {
+func start() (playwright.BrowserContext, error) {
 	fmt.Println("[INFO] Starting browser...")
 
 	pw, err := playwright.Run()
@@ -160,16 +166,22 @@ func start() (playwright.Page, error) {
 		return nil, err
 	}
 
-	page, err := browser.NewPage()
+	context, err := browser.NewContext()
 	if err != nil {
 		return nil, err
 	}
 
-	return page, nil
+	return context, nil
 }
 
-func getVersions(page playwright.Page, target Target) ([]version, error) {
+func getVersions(browser playwright.BrowserContext, target Target) ([]version, error) {
 	fmt.Println("[INFO] Obtaining version list...")
+
+	page, err := browser.NewPage()
+	if err != nil {
+		return nil, err
+	}
+	defer page.Close()
 
 	url := fmt.Sprintf("https://socket.dev/%s/package/%s/overview", target.ecosystem, target.module)
 	if _, err := page.Goto(url); err != nil {
@@ -200,17 +212,30 @@ func getVersions(page playwright.Page, target Target) ([]version, error) {
 	return versions, nil
 }
 
-func downloadVersion(page playwright.Page, target *Target, v version) error {
+func downloadVersion(browser playwright.BrowserContext, target *Target, v version) error {
 	fmt.Printf("[INFO] Downloading %s...\n", v)
+
+	page, err := browser.NewPage()
+	if err != nil {
+		return err
+	}
+	defer page.Close()
 
 	url := fmt.Sprintf("https://socket.dev/%s/package/%s/files/%s", target.ecosystem, target.module, v)
 	if _, err := page.Goto(url); err != nil {
 		return err
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	locator := page.Locator("[data-testid='file-explorer']")
+	err = locator.WaitFor( playwright.LocatorWaitForOptions{
+			State:   playwright.WaitForSelectorStateVisible,
+			Timeout: playwright.Float(5_000),
+	})
+	if err != nil {
+			return err
+	}
 
-	if err := downloadDirRecursive(page, filepath.Join(".", "out")); err != nil {
+	if err := downloadDirRecursive(page, v, filepath.Join(".", "out")); err != nil {
 		return err
 	}
 
@@ -218,7 +243,7 @@ func downloadVersion(page playwright.Page, target *Target, v version) error {
 	return nil
 }
 
-func downloadDirRecursive(page playwright.Page, path string) error {
+func downloadDirRecursive(page playwright.Page, v version, path string) error {
 	items, err := page.GetByTestId("file-explorer/file-item").All()
 	if err != nil {
 		return fmt.Errorf("could not get items: %v\n", err)
@@ -241,7 +266,7 @@ func downloadDirRecursive(page playwright.Page, path string) error {
 			continue
 		}
 
-		fmt.Printf("[INFO] Downloading %s %q\n", ty, name)
+		fmt.Printf("[INFO] %s, Downloading %s %q\n", v, ty, name)
 
 		switch ty {
 		case "dir":
@@ -256,7 +281,7 @@ func downloadDirRecursive(page playwright.Page, path string) error {
 				return fmt.Errorf("failed to create dir %q: %v", name, err)
 			}
 
-			if err := downloadDirRecursive(page, path); err != nil {
+			if err := downloadDirRecursive(page, v, path); err != nil {
 				return fmt.Errorf("failed to download %q: %v", name, err)
 			}
 
@@ -281,7 +306,7 @@ func downloadDirRecursive(page playwright.Page, path string) error {
 			}
 
 			if err := download.SaveAs(filepath.Join(path, name)); err != nil {
-				log.Fatalf("could not save %q: %v", name, err)
+				return fmt.Errorf("could not save %q: %v", name, err)
 			}
 
 			if _, err := page.GoBack(); err != nil {
