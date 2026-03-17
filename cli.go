@@ -122,7 +122,7 @@ func main() {
 	for _, version := range versions {
 		wg.Go(func() {
 			if err := downloadVersion(browser, &target, version); err != nil {
-				fmt.Printf("[WARN] Could not download %q: %v", version, err)
+				fmt.Printf("[WARN] Could not download %q: %v\n", version, err)
 			}
 		})
 	}
@@ -235,7 +235,12 @@ func downloadVersion(browser playwright.BrowserContext, target *Target, v versio
 			return err
 	}
 
-	if err := downloadDirRecursive(page, v, filepath.Join(".", "out")); err != nil {
+	path := filepath.Join(".", "out", string(v))
+	if err := os.Mkdir(path, 0755); err != nil {
+		return fmt.Errorf("failed to create dir %q: %v", path, err)
+	}
+
+	if err := downloadDirRecursive(page, v, path); err != nil {
 		return err
 	}
 
