@@ -62,20 +62,17 @@ var (
 		"",
 		"one of '"+strings.Join(ecosystems, "','")+"'",
 	)
-	flagModule = flag.String(
-		"module",
-		"",
-		"a module/package/crate name (e.g., 'sha-rust')",
-	)
 	flagVersion = flag.String(
 		"version",
 		"",
 		"a specific version to get",
 	)
+	flagModules Modules
 )
 
 type (
-	version string
+	Modules map[string]interface{}
+	Version string
 	Target  struct {
 		ecosystem, module string
 	}
@@ -96,44 +93,51 @@ func main() {
 		os.Exit(0)
 	}
 
-	target := Target{
-		ecosystem: *flagEcosystem,
-		module:    *flagModule,
-	}
-
 	browser, err := start()
 	if err != nil {
 		fmt.Printf("could not set up: %v\n", err)
 		os.Exit(1)
 	}
 
-	var versions []version
-	if *flagVersion != "" {
-		versions = []version{version(*flagVersion)}
-	} else {
-		versions, err = getVersions(browser, target)
-		if err != nil {
-			fmt.Printf("could not get versions: %v\n", err)
-			os.Exit(1)
+	for module, _ := range flagModules {
+		fmt.Printf("[INFO] Start downloading %s\n", module)
+		target := Target{
+			ecosystem: *flagEcosystem,
+			module:    module,
 		}
-	}
 
-	var wg sync.WaitGroup
-	for _, version := range versions {
-		wg.Go(func() {
-			if err := downloadVersion(browser, &target, version); err != nil {
-				fmt.Printf("[WARN] Could not download %q: %v\n", version, err)
+		var versions []Version
+		if *flagVersion != "" {
+			versions = []Version{Version(*flagVersion)}
+		} else {
+			versions, err = getVersions(browser, target)
+			if err != nil {
+				fmt.Printf("[WARN] could not get versions for %s: %v\n", module, err)
 			}
-		})
-	}
-	wg.Wait()
+		}
 
-	fmt.Printf("[INFO] Finished downloading %s\n", target.module)
+		var wg sync.WaitGroup
+		for _, version := range versions {
+			wg.Go(func() {
+				if err := downloadVersion(browser, &target, version); err != nil {
+					fmt.Printf("[WARN] Could not download %q: %v\n", version, err)
+				}
+			})
+		}
+		wg.Wait()
+
+		fmt.Printf("[INFO] Finished downloading %s\n", module)
+	}
 }
 
 func flags() error {
-	flag.Parse()
+	flag.Var(
+		&flagModules,
+		"module",
+		"a module/package/crate name (e.g., 'sha-rust'), can be repeated",
+	)
 
+	flag.Parse()
 	if *flagInstall {
 		return nil
 	}
@@ -146,8 +150,8 @@ func flags() error {
 		return fmt.Errorf("unknown ecosystem %q (want <%s>)", *flagEcosystem, strings.Join(ecosystems, "|"))
 	}
 
-	if *flagModule == "" {
-		return errors.New("must provide a -module <NAME>")
+	if len(flagModules) == 0 {
+		return errors.New("must provide at least one -module <NAME>")
 	}
 
 	return nil
@@ -174,7 +178,7 @@ func start() (playwright.BrowserContext, error) {
 	return context, nil
 }
 
-func getVersions(browser playwright.BrowserContext, target Target) ([]version, error) {
+func getVersions(browser playwright.BrowserContext, target Target) ([]Version, error) {
 	fmt.Println("[INFO] Obtaining version list...")
 
 	page, err := browser.NewPage()
@@ -202,17 +206,17 @@ func getVersions(browser playwright.BrowserContext, target Target) ([]version, e
 		return nil, fmt.Errorf("no versions found")
 	}
 
-	versions := make([]version, len(texts))
+	versions := make([]Version, len(texts))
 	for i, v := range texts {
 		v = strings.Replace(v, " (latest)", "", 1)
 		v = strings.Replace(v, " unpublished", "", 1)
-		versions[i] = version(v)
+		versions[i] = Version(v)
 	}
 
 	return versions, nil
 }
 
-func downloadVersion(browser playwright.BrowserContext, target *Target, v version) error {
+func downloadVersion(browser playwright.BrowserContext, target *Target, v Version) error {
 	fmt.Printf("[INFO] Downloading %s...\n", v)
 
 	page, err := browser.NewPage()
@@ -227,16 +231,16 @@ func downloadVersion(browser playwright.BrowserContext, target *Target, v versio
 	}
 
 	locator := page.Locator("[data-testid='file-explorer']")
-	err = locator.WaitFor( playwright.LocatorWaitForOptions{
-			State:   playwright.WaitForSelectorStateVisible,
-			Timeout: playwright.Float(5_000),
+	err = locator.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5_000),
 	})
 	if err != nil {
-			return err
+		return err
 	}
 
-	path := filepath.Join(".", "out", string(v))
-	if err := os.Mkdir(path, 0755); err != nil {
+	path := filepath.Join(".", "out", target.ecosystem, target.module, string(v))
+	if err := os.MkdirAll(path, 0755); err != nil {
 		return fmt.Errorf("failed to create dir %q: %v", path, err)
 	}
 
@@ -248,7 +252,7 @@ func downloadVersion(browser playwright.BrowserContext, target *Target, v versio
 	return nil
 }
 
-func downloadDirRecursive(page playwright.Page, v version, path string) error {
+func downloadDirRecursive(page playwright.Page, v Version, path string) error {
 	items, err := page.GetByTestId("file-explorer/file-item").All()
 	if err != nil {
 		return fmt.Errorf("could not get items: %v\n", err)
@@ -324,5 +328,17 @@ func downloadDirRecursive(page playwright.Page, v version, path string) error {
 		}
 	}
 
+	return nil
+}
+
+func (m *Modules) String() string {
+	return fmt.Sprint(*m)
+}
+func (m *Modules) Set(value string) error {
+	if *m == nil {
+		*m = make(map[string]interface{}, 1)
+	}
+
+	(*m)[value] = nil
 	return nil
 }
